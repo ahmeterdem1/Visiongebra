@@ -33,9 +33,10 @@ __tEXt = bytes("tEXt", "ascii")
 __tIME = bytes("tIME", "ascii")
 __tRNS = bytes("tRNS", "ascii")
 __zTXt = bytes("zTXt", "ascii")
+__iDOT = bytes("iDOT", "ascii")
 headerlist = [__bKGD, __cHRM, __dSIG, __eXIf, __gAMA, __hIST, __iCCP,
               __iTXt, __pHYs, __sBIT, __sPLT, __sRGB, __sTER, __tEXt,
-              __tIME, __tRNS, __zTXt]
+              __tIME, __tRNS, __zTXt, __iDOT]
 
 __grayscale = int.to_bytes(0, 1, "big")  # 0
 __rgbtrue = int.to_bytes(2, 1, "big")  # 2
@@ -113,6 +114,120 @@ def __paeth(a, b, c):
     if pb <= pc:
         return b
     return c
+
+def __defilter(decompressed, height, width, true_width, byte_per_pixel):
+    decompressed = [k for k in decompressed]  # Make it an integer list
+    im_matrix = []
+    for i in range(height):
+        f_type = decompressed[i * true_width]
+        row = []
+        if f_type == 0:  # No filtering
+            for j in range(width):
+                pixel = []
+                for k in range(byte_per_pixel):
+                    pixel.append(decompressed[k + (i * true_width + 1) + j * byte_per_pixel])
+                    #decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                row.append(pixel)
+        elif f_type == 1:  # Sub filtering
+            a = 0
+            for j in range(width):
+                pixel = []
+                for k in range(byte_per_pixel):
+                    val = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                    pixel.append((val - a) % 256)
+                    decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                    a = val % 256
+                row.append(pixel)
+        elif f_type == 2:  # Up filtering
+            if i == 0:  # Will be the same as no filter since Prior(x) = 0 for all x
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        pixel.append(decompressed[k + (i * true_width + 1) + j * byte_per_pixel])
+                        decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                    row.append(pixel)
+            else:
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        val1 = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                        val2 = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
+                        pixel.append((val1 + val2) % 256)
+                        decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                    row.append(pixel)
+        elif f_type == 3:
+            if i == 0:
+                a, b = 0, 0
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        if k + j:
+                            a = decompressed[k + (i * true_width) + j * byte_per_pixel]
+                        this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                        pixel.append((this + (a + b) % 256) % 256)
+                        decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                    row.append(pixel)
+            else:
+                a, b = 0, 0
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        if k + j:
+                            a = decompressed[k + (i * true_width) + j * byte_per_pixel]
+                        b = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
+                        this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                        pixel.append((this + (a + b) % 256) % 256)
+                        decompressed[k + (i * true_width + 1) + j * byte_per_pixel] = pixel[-1]
+                    row.append(pixel)
+        elif f_type == 4:
+            if i == 0:
+                a, b, c = 0, 0, 0
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        if j + k:
+                            a = decompressed[k + (i * true_width) + j * byte_per_pixel]
+                        this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                        this = (this + __paeth(a, b, c)) % 256
+                        pixel.append(this)
+                        pixel[-1] = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                    row.append(pixel)
+            else:
+                a, b, c = 0, 0, 0
+
+                for j in range(width):
+                    pixel = []
+                    for k in range(byte_per_pixel):
+                        b = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
+                        if j + k:
+                            a = decompressed[k + (i * true_width) + j * byte_per_pixel]
+                            c = decompressed[k + ((i - 1) * true_width) + j * byte_per_pixel]
+                        this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                        this = (this + __paeth(a, b, c)) % 256
+                        pixel.append(this)
+                        pixel[-1] = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
+                    row.append(pixel)
+        im_matrix.append(row)
+    logger.debug("Raw matrix loaded.")
+
+    mlist = [0 for k in range(byte_per_pixel)]
+    rowlist = [[] for k in range(byte_per_pixel)]
+    for p in im_matrix[0]:
+        for k in range(byte_per_pixel):
+            rowlist[k].append(p[k])
+
+    for k in range(byte_per_pixel):
+        mlist[k] = Matrix(Vector(*(rowlist[k])))
+
+    for row in im_matrix[1:]:
+        rowlist = [[] for l in range(byte_per_pixel)]
+        for p in row:
+            for k in range(byte_per_pixel):
+                rowlist[k].append(p[k])
+        for k in range(byte_per_pixel):
+            mlist[k].append(Vector(*rowlist[k]))
+    logger.debug("Matrix reformatted to a Tensor.")
+    return Tensor(*mlist)
 
 
 def imread(path, method=LOAD_RGB):
@@ -234,109 +349,137 @@ def imread(path, method=LOAD_RGB):
             decompressed = zlib.decompress(image_data)
             true_width = width * byte_per_pixel + 1
 
+            # Defiltering will be the same no matter the load method
+            im_matrix = __defilter(decompressed, height, width, true_width, byte_per_pixel)
+            # Above is already a Tensor object.
+
             if method == LOAD_ASIS:
-                im_matrix = []
-                for i in range(height):
-                    f_type = decompressed[i * true_width]
-                    row = []
-                    if f_type == 0:  # No filtering
-                        for j in range(width):
-                            pixel = []
-                            for k in range(byte_per_pixel):
-                                pixel.append(decompressed[k + (i * true_width + 1) + j * byte_per_pixel])
-                            row.append(pixel)
-                    elif f_type == 1:  # Sub filtering
-                        a = 0
-                        for j in range(width):
-                            pixel = []
-                            for k in range(byte_per_pixel):
-                                val = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                pixel.append((val - a) % 256)
-                                a = val % 256
-                            row.append(pixel)
-                    elif f_type == 2:  # Up filtering
-                        if i == 0:  # Will be the same as no filter since Prior(x) = 0 for all x
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    pixel.append(decompressed[k + (i * true_width + 1) + j * byte_per_pixel])
-                                row.append(pixel)
-                        else:
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    val1 = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                    val2 = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
-                                    pixel.append((val1 + val2) % 256)
-                                row.append(pixel)
-                        pass
-                    elif f_type == 3:
-                        if i == 0:
-                            a, b = 0, 0
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    if k + j:
-                                        a = decompressed[k + (i * true_width) + j * byte_per_pixel]
-                                    this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                    pixel.append((this + (a + b) % 256) % 256)
-                                row.append(pixel)
-                        else:
-                            a, b = 0, 0
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    if k + j:
-                                        a = decompressed[k + (i * true_width) + j * byte_per_pixel]
-                                    b = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
-                                    this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                    pixel.append((this + (a + b) % 256) % 256)
-                                row.append(pixel)
-                    elif f_type == 4:
-                        if i == 0:
-                            a, b, c = 0, 0, 0
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    if j + k:
-                                        a = decompressed[k + (i * true_width) + j * byte_per_pixel]
-                                    this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                    this = (this + __paeth(a, b, c)) % 256
-                                    pixel.append(this)
-                                row.append(pixel)
-                        else:
-                            a, b, c = 0, 0, 0
-
-                            for j in range(width):
-                                pixel = []
-                                for k in range(byte_per_pixel):
-                                    b = decompressed[k + ((i - 1) * true_width + 1) + j * byte_per_pixel]
-                                    if j + k:
-                                        a = decompressed[k + (i * true_width) + j * byte_per_pixel]
-                                        c = decompressed[k + ((i - 1) * true_width) + j * byte_per_pixel]
-                                    this = decompressed[k + (i * true_width + 1) + j * byte_per_pixel]
-                                    this = (this + __paeth(a, b, c)) % 256
-                                    pixel.append(this)
-                                row.append(pixel)
-
-                    im_matrix.append(row)
+                pass  # We will literally do nothing
             elif method == LOAD_RGB:
-                pass
+                if colotypename == "GRAYSCALE" or colotypename == "GRAYSCALE WITH ALPHA" or colotypename == "TRUE RGB":
+                    pass
+                elif colotypename == "RGB WITH ALPHA":
+                    opacity = pow(2, int.from_bytes(bit_depth, "big")) - 1
+                    for matrix in im_matrix[:-1]:
+                        for k in range(height):
+                            for l in range(width):
+                                matrix.values[k][l] *= (1 - im_matrix.values[-1][k][l]) / opacity
+                                matrix.values[k][l] %= 256
+
+                    return Image(Tensor(*(im_matrix[:-1])), "PNG", "TRUE RGB", method)
             elif method == LOAD_BGR:
-                pass
+                if colotypename == "GRAYSCALE":
+                    Image(Tensor(im_matrix.values[0], im_matrix.values[0], im_matrix.values[0]), "PNG", "TRUE BGR", method)
+                elif colotypename == "GRAYSCALE WITH ALPHA":
+                    opacity = pow(2, int.from_bytes(bit_depth, "big")) - 1
+                    for row in im_matrix.values[0]:
+                        for k in range(im_matrix.dimension[1]):
+                            row[k] *= (1 - row[k]) / opacity
+                            row[k] %= 256
+
+                elif colotypename == "TRUE RGB":
+                    return Image(Tensor(*(im_matrix.values[::-1])), "PNG", "TRUE BGR", method)
+
+                elif colotypename == "RGB WITH ALPHA":
+                    opacity = pow(2, int.from_bytes(bit_depth, "big")) - 1
+                    for matrix in im_matrix[:-1]:
+                        for k in range(height):
+                            for l in range(width):
+                                matrix.values[k][l] *= (1 - im_matrix.values[-1][k][l]) / opacity
+                                matrix.values[k][l] %= 256
+                    return Image(Tensor(*((im_matrix.values[:-1])[::-1])), "PNG", "TRUE BGR", method)
             elif method == LOAD_GRAYSCALE:
-                pass
+                if colotypename == "GRAYSCALE":
+                    pass
+
+                elif colotypename == "TRUE RGB":
+                    new_im_matrix = (  0.299 * im_matrix.values[0]
+                                     + 0.587 * im_matrix.values[1]
+                                     + 0.114 * im_matrix.values[2]).map(lambda x: x % 256)
+
+                    return Image(Tensor(new_im_matrix), "PNG", "GRAYSCALE", method)
+
+                elif colotypename == "RGB WITH ALPHA":
+                    opacity = pow(2, int.from_bytes(bit_depth, "big")) - 1
+                    new_im_matrix = (  0.299 * im_matrix.values[0]
+                                     + 0.587 * im_matrix.values[1]
+                                     + 0.114 * im_matrix.values[2])
+                    for k in range(height):
+                        for l in range(width):
+                            new_im_matrix.values[k][l] *= (1 - im_matrix.values[-1][k][l]) / opacity
+                            new_im_matrix.values[k][l] %= 256
+                    return Image(Tensor(new_im_matrix), "PNG", "GRAYSCALE", method)
+
+                elif colotypename == "GRAYSCALE WITH ALPHA":
+                    opacity = pow(2, int.from_bytes(bit_depth, "big")) - 1
+                    for k in range(height):
+                        for l in range(width):
+                            im_matrix.values[0][k][l] *= (1 - im_matrix.values[1][k][l]) / opacity
+                            im_matrix.values[0][k][l] %= 256
+                    return Image(Tensor(im_matrix.values[0]), "PNG", "GRAYSCALE", method)
 
             return Image(im_matrix, "PNG", colotypename, method)
-
-
         else:
             raise FormatError()
 
 def imsave(path, img):
-    if not isinstance(img, Image): raise ArgTypeError("Incorrect variable type for image, must be visiongebra.Image")
+    if not isinstance(img, Image): raise ArgTypeError("Incorrect variable type for image, must be of type Image.")
 
-    logger.info(f"Image saved at {path}.{img.imtype}")
+    ihdr_header = bytes()
+    ihdr_header += int.to_bytes(img.matrix.dimension[2], 4, "big")  #width
+    ihdr_header += int.to_bytes(img.matrix.dimension[1], 4, "big")  #height
+    ihdr_header += int.to_bytes(8, 1, "big")  #bit-depth (yes, always 8 when writing for now)
+    # 8 is a supported bit depth for all image types
+
+    # Color type
+    if img.colortype == "GRAYSCALE":
+        ihdr_header += __grayscale
+    elif img.colortype == "GRAY WITH ALPHA":
+        ihdr_header += __grayalpha
+    elif img.colortype == "TRUE RGB":
+        ihdr_header += __rgbtrue
+    elif img.colortype == "RGB WITH ALPHA":
+        ihdr_header += __rgba
+    else:
+        logger.warning(f"Unrecognized color type: {img.colortype}")
+        return
+
+    ihdr_header += int.to_bytes(0, 1, "big")  # Compression type, always 0
+    ihdr_header += int.to_bytes(0, 1, "big")  # Filter method is again always 0
+    ihdr_header += int.to_bytes(0, 1, "big")  # No interlace is supported yet
+    ihdr_checksum = int.to_bytes(zlib.crc32(__IHDR + ihdr_header), 4, "big")
+    # 17 bytes here
+    ihdr_length = int.to_bytes(13, 4, "big")
+    ihdr_data = ihdr_length + __IHDR + ihdr_header + ihdr_checksum  # IHDR chunk done.
+
+    # Since we do not support __indexed format yet, our images do not
+    # need to have a PLTE chunk. It is only a must for __indexed; color type 3.
+
+    image_data = bytes()
+    logger.debug("IHDR ready, begin IDAT preparation.")
+    for i in range(img.matrix.dimension[1]):
+        image_data += int.to_bytes(0, 1, "big")  # We will not apply filtering
+        for j in range(img.matrix.dimension[2]):
+            for layer in range(img.matrix.dimension[0]):
+                image_data += int.to_bytes(img.matrix.values[layer].values[i][j], 1, "big")
+    logger.debug("Begin compression.")
+    image = __IDAT + zlib.compress(image_data)
+    logger.debug("End compression.")
+    image_checksum = int.to_bytes(zlib.crc32(image), 4, "big")
+    idat_length = int.to_bytes(len(image) - 4, 4, "big")
+    idat_data = idat_length + image + image_checksum
+    logger.debug("IDAT ready.")
+    # IDAT chunk done.
+
+    end_length = int.to_bytes(0, 4, "big")  # Name + crc checksum = 4 + 4 = 8
+    end_data = end_length + __IEND
+    end_checksum = int.to_bytes(zlib.crc32(end_data), 4, "big")
+    end = end_data + end_checksum
+
+    with open(path, "wb") as file:
+        file.write(__PNG + ihdr_data + idat_data + end)
+
+    logger.info(f"Image saved at {path}")
 
 class Image:
 
@@ -347,8 +490,13 @@ class Image:
         self.colortype = colortype
 
     def __repr__(self):
-        return f"<{0} {self.imtype} image loaded as load type {self.loadtype}>"
+        return f"<{self.matrix.dimension} {self.imtype} image loaded as load type {self.colortype}>"
 
     def __str__(self):
         return str(self.matrix)
+
+    def describe(self):
+        print(self.__repr__())
+
+
 
